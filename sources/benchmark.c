@@ -20,6 +20,10 @@ double get_total_time(struct timespec start, struct timespec end) {
     return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
 }
 
+double get_total_time_ms(struct timespec start, struct timespec end) {
+    return ((end.tv_sec - start.tv_sec) * 1e9 + (end.tv_nsec - start.tv_nsec)) / 1e6;
+}
+
 // Check to see if A and B have the same entires and are the same matrix or not. 
 bool same_matrix(int **A, int **B, size_t size) {
     for (size_t i = 0; i < size; i++) {

@@ -1,7 +1,6 @@
-/*  CS519, Spring 2026: Project 1 - Part 2
-    Written by: Arthur Levitsky
+/*  CS519, Spring 2026: Project 3
+    Written by: Arthur Levitsky and Alexander Wu
     Description: IPC using shared memory to perform matrix multiplication.
-    No locking mechanism is needed because no contention in shared memory.
 */
 
 #include <stdlib.h>

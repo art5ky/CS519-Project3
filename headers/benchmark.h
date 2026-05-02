@@ -11,6 +11,7 @@
 
 void print_stats(int matrix_size, int num_processes, int verified, double elapsed);
 double get_total_time(struct timespec start, struct timespec end);
+double get_total_time(struct timespec start, struct timespec end);
 
 bool same_matrix(int **A, int **B);
 bool frievalds_verify(int **A, int **B, int **C, size_t size);
