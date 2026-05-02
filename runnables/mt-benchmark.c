@@ -99,8 +99,8 @@ int main(int argc, char *argv[]) {
 
     double elapsed_sec = get_total_time(t_start, t_end);
 
-    printf("\n\nTotal time (sec): %.2f\n",  elapsed_sec);
-    printf("Full vector passes (thread 0): %ld\n", full_passes);
+    printf("\n\nFull vector passes (thread 0): %ld\n", full_passes);
+    printf("Total time (sec): %.2f\n",  elapsed_sec);
     printf("Total iterations (all threads): %ld\n",   total_iters);
     printf("Throughput (iter/sec): %.2f\n",  total_iters / elapsed_sec);
 

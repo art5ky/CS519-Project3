@@ -5,7 +5,7 @@ RUN_DIR = runnables
 BIN_DIR = .
 COMMON_SRCS = $(SRC_DIR)/sqmatrix.c $(SRC_DIR)/benchmark.c
 LOCKS_SRC   = $(SRC_DIR)/locks.c
-TARGET_SHMEM    = ipc_shmem
+TARGET_SHMEM    = ipc-shmem
 TARGET_BENCH_MT = mt-benchmark
 
 all: $(TARGET_SHMEM) $(TARGET_BENCH_MT)
