@@ -1,0 +1,11 @@
+**/.vscode/
+build/
+*.dsc
+*.gz
+**/linux-5.15.0/
+**/linux-5.15.0-orig/
+**/test_files/
+.config
+REPORTING-BUGS
+ipc-shmem
+mt-benchmark
