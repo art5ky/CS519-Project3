@@ -1,0 +1,13 @@
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index b8037a46f..ce836f72c 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1272,6 +1272,8 @@ asmlinkage long sys_mmap_pgoff(unsigned long addr, unsigned long len,
+ 			unsigned long fd, unsigned long pgoff);
+ asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
+ 
++/* added syscall for project 3*/
++asmlinkage long sys_set_inactive(int is_inactive); // 0 for active, 1 for inactive
+ 
+ /*
+  * Not a real system call, but a placeholder for syscalls which are

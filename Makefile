@@ -14,7 +14,7 @@ $(TARGET_SHMEM): $(RUN_DIR)/ipc-shmem.c $(COMMON_SRCS) $(LOCKS_SRC)
 	$(CC) $(CFLAGS) $^ -o $(BIN_DIR)/$@
 
 $(TARGET_BENCH_MT): $(RUN_DIR)/mt-benchmark.c $(COMMON_SRCS)
-	$(CC) -O3 -march=native -Wall $^ -o $(BIN_DIR)/$@
+	$(CC) $(CFLAGS) $^ -o $(BIN_DIR)/$@ -pthread
 
 clean:
 	rm -f $(TARGET_SHMEM) $(TARGET_BENCH_MT)

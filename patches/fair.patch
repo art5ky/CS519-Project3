@@ -1,0 +1,21 @@
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 3a35bd128..76a2411b3 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -7441,6 +7441,16 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+ 	if (cse_is_idle != pse_is_idle)
+ 		return;
+ 
++	/* Added for Project 3. Add a check for the currently running task. If the task running on
++	the CPU has marked itself inactive, then favor the newly waking task and do the CFS preemption logic.*/
++	if(curr->is_inactive)
++	{
++		if(!next_buddy_marked)
++			set_next_buddy(pse);
++
++		goto preempt;
++	}
++
+ 	update_curr(cfs_rq_of(se));
+ 	if (wakeup_preempt_entity(se, pse) == 1) {
+ 		/*

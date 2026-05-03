@@ -12,11 +12,24 @@
 #include <signal.h>
 #include <sys/resource.h>
 #include <pthread.h>
+#include <sys/syscall.h>
 
 #include "../headers/benchmark.h"
 
 #define NUM_THREADS sysconf(_SC_NPROCESSORS_CONF)
 #define SYS_SET_INACTIVE 449
+
+// Call set_inactive(1) once every N completed vector additions
+#define INACTIVE_INTERVAL 1000
+
+// Cooperative mode toggle for comparison in reports
+static int coop_mode = 0;
+
+// Syscall wrapper for set_inactive
+static inline long set_inactive(int is_inactive)
+{
+    return syscall(SYS_SET_INACTIVE, is_inactive);
+}
 
 typedef struct {
     int    *A;
@@ -37,6 +50,10 @@ double get_total_time_ms(struct timespec start, struct timespec end);
 
 int main(int argc, char *argv[]) {
     arg_check(argc, argv);
+    // Check if coop is requested
+    if (argc >= 3 && strcmp(argv[2], "coop") == 0) {
+        coop_mode = 1;
+    }
 
     long vector_size = atol(argv[1]);
     long num_threads = NUM_THREADS;
@@ -66,6 +83,7 @@ int main(int argc, char *argv[]) {
     printf("Number of threads: %ld\n", num_threads);
     printf("Vector size: %ld\n", vector_size);
     printf("Elements per thread: %ld\n", elems_per_thread);
+    printf("Cooperative mode: %s\n", coop_mode ? "enabled" : "disabled");
     printf("Press Ctrl+C to stop...\n\n");
 
     signal(SIGINT, handle_sigint);  
@@ -112,9 +130,10 @@ int main(int argc, char *argv[]) {
 
 void arg_check(int argc, char *argv[]) {
     if (argc <= 1) {
-        printf("Usage: %s [VECTOR_SIZE]\n", argv[0]);
+        printf("Usage: %s [VECTOR_SIZE] [mode]\n", argv[0]);
         printf("------------------------------------------------------\n");
         printf("VECTOR_SIZE - number of integer elements (2 - 10000)\n");
+        printf("mode        - optional: coop enables cooperative scheduling\n");
         exit(1);
     }
 
@@ -122,7 +141,12 @@ void arg_check(int argc, char *argv[]) {
         printf("Incompatible VECTOR_SIZE! (2 - 10000)\n");
         exit(1);
     }
+    if (argc >= 3 && strcmp(argv[2], "coop") != 0 && strcmp(argv[2], "normal") != 0) {
+        printf("Invalid mode. Use 'normal' or 'coop'.\n");
+        exit(1);
+    }
 }
+
 
 // When pressing CTRL+C to end program, execute this function.
 void handle_sigint(int sig) { 
@@ -139,7 +163,22 @@ void *vector_add_loop(void *arg) {
         for (size_t i = d->start; i < d->end; i++) {
             d->C[i] = d->A[i] + d->B[i];
         }
+
         d->iterations++;
+
+        if (coop_mode && (d->iterations % INACTIVE_INTERVAL == 0)) {
+            long ret = set_inactive(1);
+            if (ret != 0) {
+                perror("set_inactive");
+                running = 0;
+                break;
+            }
+        }
     }
+
+    if (coop_mode) {
+        set_inactive(0);
+    }
+
     return NULL;
 }

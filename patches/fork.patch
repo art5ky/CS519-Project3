@@ -1,0 +1,14 @@
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 442e4562f..bec69f709 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2265,6 +2265,9 @@ static __latent_entropy struct task_struct *copy_process(
+ 	p->bpf_ctx = NULL;
+ #endif
+ 
++	/* Initialize every task with the is_inactive flag at 0 (active)*/
++	p->is_inactive = 0;
++
+ 	/* Perform scheduler related setup. Assign this task to a CPU. */
+ 	retval = sched_fork(clone_flags, p);
+ 	if (retval)

@@ -1,0 +1,47 @@
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 71c819c62..fb6d3cf94 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -12,6 +12,9 @@
+ 
+ #include "sched.h"
+ 
++/* Added import for project 3*/
++#include <linux/syscalls.h>
++
+ #include <linux/nospec.h>
+ 
+ #include <linux/kcov.h>
+@@ -7058,6 +7061,32 @@ EXPORT_SYMBOL(can_nice);
+ 
+ #ifdef __ARCH_WANT_SYS_NICE
+ 
++/* 
++ * sys_set_inactive - Have the thread mar itself as active or inactive
++ * @is_inactive: Flag to set status as active (0) or inactive (1)
++ */
++SYSCALL_DEFINE1(set_inactive, int, is_inactive)
++{
++	struct task_struct *task = current;
++	
++	// If the flag is not one of the recognized values, return error
++	if(is_inactive != 0 && is_inactive != 1)
++		return -EINVAL; 
++
++	task->is_inactive = is_inactive;
++	pr_info_ratelimited("Set Inactive: Task PID=%d TGID=%d is_inactive=%d\n", 
++		task->pid, task->tgid, task->is_inactive);
++	
++	// Inactive thread lets the scheduler run another task
++	if(is_inactive)
++	{
++		set_tsk_need_resched(task);
++		schedule();
++	}
++
++	return 0;
++}
++
+ /*
+  * sys_nice - change the priority of the current process.
+  * @increment: priority increment
