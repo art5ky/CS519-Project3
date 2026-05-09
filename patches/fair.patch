@@ -1,15 +1,80 @@
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 3a35bd128..76a2411b3 100644
+index 3a35bd128..b08243fa0 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
-@@ -7441,6 +7441,16 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+@@ -22,6 +22,8 @@
+  */
+ #include "sched.h"
+ 
++#define INACTIVE_PENALTY (5ULL * NSEC_PER_SEC)
++
+ /*
+  * Targeted preemption latency for CPU-bound tasks:
+  *
+@@ -4634,6 +4636,22 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+ 	struct sched_entity *se;
+ 	s64 delta;
+ 
++	/* Added for Project 3. Some CPU-bound inactive tasks may not trigger wakeup
++	preemption often, so if the current task is marked inactive, request reschedule
++	so other runnable tasks can run.*/
++	if (entity_is_task(curr)) {
++		struct task_struct *task = task_of(curr);
++
++		if (task->is_inactive) {
++			/*pr_info_ratelimited("P3 tick: inactive pid=%d tgid=%d\n",
++				    task->pid, task->tgid); // Debug statement 
++					*/
++
++			resched_curr(rq_of(cfs_rq));
++			return;
++		}
++	}
++
+ 	ideal_runtime = sched_slice(cfs_rq, curr);
+ 	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
+ 	if (delta_exec > ideal_runtime) {
+@@ -4779,6 +4797,29 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
+ 
+ 	if (prev->on_rq) {
+ 		update_stats_wait_start(cfs_rq, prev);
++		/* Added for Project 3. If an inactive task is placed back into the CFS RB tree,
++		then move it behind the current minimum vruntime by a multiple of CFS slices. This
++		makes it favor active tasks without necessarily punishing this task too hard, thus
++		making it a more efficient interleaving of processes for tasks.*/
++		if (entity_is_task(prev)) {
++			struct task_struct *task = task_of(prev);
++			if (task->is_inactive) {
++				/*
++				u64 period = max_t(u64, sysctl_sched_latency, 
++					cfs_rq->nr_running * sysctl_sched_min_granularity); // Scale penalty by number of runnable tasks
++				prev->vruntime += period * 10ULL; 
++
++				u64 old_vruntime = prev->vruntime;*/
++
++				prev->vruntime += INACTIVE_PENALTY;
++
++				/*pr_info_ratelimited("P3 put_prev: pid=%d tgid=%d old=%llu new=%llu penalty=%llu min=%llu nr_running=%u\n",
++							task->pid, task->tgid,
++							old_vruntime, prev->vruntime,
++							INACTIVE_PENALTY, cfs_rq->min_vruntime,
++							cfs_rq->nr_running); // Debug Print */
++			}
++		}
+ 		/* Put 'current' back into the tree. */
+ 		__enqueue_entity(cfs_rq, prev);
+ 		/* in !on_rq case, update occurred at dequeue */
+@@ -7441,6 +7482,19 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
  	if (cse_is_idle != pse_is_idle)
  		return;
  
 +	/* Added for Project 3. Add a check for the currently running task. If the task running on
-+	the CPU has marked itself inactive, then favor the newly waking task and do the CFS preemption logic.*/
-+	if(curr->is_inactive)
++	the CPU has marked itself inactive, then favor the newly waking task and bypass vruntime comparison.*/
++	if(curr->is_inactive && !p->is_inactive)
 +	{
++		/* pr_info_ratelimited("P3 wakeup: inactive curr pid=%d waking pid=%d\n",
++			    curr->pid, p->pid); // Debug statement
++				*/
 +		if(!next_buddy_marked)
 +			set_next_buddy(pse);
 +

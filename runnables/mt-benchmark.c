@@ -17,10 +17,9 @@
 #include "../headers/benchmark.h"
 
 #define NUM_THREADS sysconf(_SC_NPROCESSORS_CONF)
+#define THREAD_MULTIPLIER 2
+#define VECTOR_SIZE 1000
 #define SYS_SET_INACTIVE 449
-
-// Call set_inactive(1) once every N completed vector additions
-#define INACTIVE_INTERVAL 1000
 
 // Cooperative mode toggle for comparison in reports
 static int coop_mode = 0;
@@ -31,6 +30,155 @@ static inline long set_inactive(int is_inactive)
     return syscall(SYS_SET_INACTIVE, is_inactive);
 }
 
+/* Test Portion*/
+static volatile sig_atomic_t running = 1;
+
+typedef struct {
+    long iterations;
+} thread_data_t;
+
+void handle_sigint(int sig);
+void *vector_add_loop(void *arg);
+void arg_check(int argc, char *argv[]);
+
+int main(int argc, char *argv[]) {
+    arg_check(argc, argv);
+
+    if (argc >= 2 && strcmp(argv[1], "coop") == 0) {
+        coop_mode = 1;
+    }
+
+    long online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    long num_threads = THREAD_MULTIPLIER * online_cpus;
+
+    pthread_t *threads = malloc(num_threads * sizeof(pthread_t));
+    thread_data_t *thread_args = calloc(num_threads, sizeof(thread_data_t));
+
+    if (threads == NULL || thread_args == NULL) {
+        fprintf(stderr, "Allocation for thread metadata failed. Exiting...\n");
+        free(threads);
+        free(thread_args);
+        return 1;
+    }
+
+    struct timespec t_start, t_end;
+
+    printf("Number of CPUs: %ld\n", online_cpus);
+    printf("Number of threads: %ld\n", num_threads);
+    printf("Thread multiplier: %d\n", THREAD_MULTIPLIER);
+    printf("Per-thread vector size: %d\n", VECTOR_SIZE);
+    printf("Cooperative mode: %s\n", coop_mode ? "enabled" : "disabled");
+    printf("Press Ctrl+C to stop...\n\n");
+
+    signal(SIGINT, handle_sigint);
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    for (long i = 0; i < num_threads; i++) {
+        if (pthread_create(&threads[i], NULL, vector_add_loop, &thread_args[i]) != 0) {
+            perror("pthread_create");
+            running = 0;
+            num_threads = i;
+            break;
+        }
+    }
+
+    for (long i = 0; i < num_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+
+    long total_iters = 0;
+    long min_iters = thread_args[0].iterations;
+    long max_iters = thread_args[0].iterations;
+
+    for (long i = 0; i < num_threads; i++) {
+        long iters = thread_args[i].iterations;
+        total_iters += iters;
+
+        if (iters < min_iters)
+            min_iters = iters;
+        if (iters > max_iters)
+            max_iters = iters;
+    }
+
+    double elapsed_sec = get_total_time(t_start, t_end);
+
+    printf("\nTotal time (sec): %.2f\n", elapsed_sec);
+    printf("Total iterations (all threads): %ld\n", total_iters);
+    printf("Throughput (iter/sec): %.2f\n", total_iters / elapsed_sec);
+    printf("Min thread iterations: %ld\n", min_iters);
+    printf("Max thread iterations: %ld\n", max_iters);
+
+    free(threads);
+    free(thread_args);
+    return 0;
+}
+
+void arg_check(int argc, char *argv[]) {
+    if (argc <= 1) {
+        printf("Usage: %s [normal|coop]\n", argv[0]);
+        printf("------------------------------------------------------\n");
+        printf("normal - run background spinner normally\n");
+        printf("coop   - mark spinner threads inactive using set_inactive\n");
+        exit(1);
+    }
+
+    if (strcmp(argv[1], "coop") != 0 && strcmp(argv[1], "normal") != 0) {
+        printf("Invalid mode. Use 'normal' or 'coop'.\n");
+        exit(1);
+    }
+}
+
+void handle_sigint(int sig) {
+    (void)sig;
+    running = 0;
+}
+
+void *vector_add_loop(void *arg) {
+    thread_data_t *d = (thread_data_t *)arg;
+
+    volatile float A[VECTOR_SIZE];
+    volatile float B[VECTOR_SIZE];
+    volatile float C[VECTOR_SIZE];
+
+    for (int i = 0; i < VECTOR_SIZE; i++) {
+        A[i] = (float)i;
+        B[i] = (float)(VECTOR_SIZE - i);
+        C[i] = 0.0f;
+    }
+
+    d->iterations = 0;
+
+    if (coop_mode) {
+        long ret = set_inactive(1);
+        if (ret != 0) {
+            perror("set_inactive");
+            running = 0;
+            return NULL;
+        }
+    }
+
+    volatile float sink = 0.0f;
+
+    while (running) {
+        for (int i = 0; i < VECTOR_SIZE; i++) {
+            C[i] = A[i] + B[i];
+        }
+        sink += C[d->iterations % VECTOR_SIZE];
+        d->iterations++;
+    }
+
+    (void)sink;
+
+    if (coop_mode) {
+        set_inactive(0);
+    }
+
+    return NULL;
+}
+
+/**
 typedef struct {
     int    *A;
     int    *B;
@@ -56,7 +204,7 @@ int main(int argc, char *argv[]) {
     }
 
     long vector_size = atol(argv[1]);
-    long num_threads = NUM_THREADS;
+    long num_threads = THREAD_MULTIPLIER * NUM_THREADS;
     long elems_per_thread = vector_size / num_threads;
 
     // Allocate vectors. Allocate C vector and initialize with 0s.
@@ -81,6 +229,7 @@ int main(int argc, char *argv[]) {
     struct timespec t_start, t_end;
 
     printf("Number of threads: %ld\n", num_threads);
+    printf("Thread multiplier: %d\n", THREAD_MULTIPLIER);
     printf("Vector size: %ld\n", vector_size);
     printf("Elements per thread: %ld\n", elems_per_thread);
     printf("Cooperative mode: %s\n", coop_mode ? "enabled" : "disabled");
@@ -159,21 +308,21 @@ void *vector_add_loop(void *arg) {
     thread_data_t *d = (thread_data_t *)arg;
     d->iterations = 0;
 
+    if (coop_mode) {
+        long ret = set_inactive(1);
+        if (ret != 0) {
+            perror("set_inactive");
+            running = 0;
+            return NULL;
+        }
+    }
+
     while (running) {
         for (size_t i = d->start; i < d->end; i++) {
             d->C[i] = d->A[i] + d->B[i];
         }
 
         d->iterations++;
-
-        if (coop_mode && (d->iterations % INACTIVE_INTERVAL == 0)) {
-            long ret = set_inactive(1);
-            if (ret != 0) {
-                perror("set_inactive");
-                running = 0;
-                break;
-            }
-        }
     }
 
     if (coop_mode) {
@@ -181,4 +330,4 @@ void *vector_add_loop(void *arg) {
     }
 
     return NULL;
-}
+}*/
