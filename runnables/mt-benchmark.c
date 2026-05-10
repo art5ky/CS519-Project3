@@ -3,6 +3,8 @@
    Description: Benchmarking multi-threaded vector addition in an infinite loop.
 */
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
@@ -13,6 +15,7 @@
 #include <sys/resource.h>
 #include <pthread.h>
 #include <sys/syscall.h>
+#include <sched.h>
 
 #include "../headers/benchmark.h"
 
@@ -23,6 +26,8 @@
 
 // Cooperative mode toggle for comparison in reports
 static int coop_mode = 0;
+// Toggle for yield mode for comparison in reports
+static int yield_mode = 0;
 
 // Syscall wrapper for set_inactive
 static inline long set_inactive(int is_inactive)
@@ -35,6 +40,9 @@ static volatile sig_atomic_t running = 1;
 
 typedef struct {
     long iterations;
+    long involuntary_switches;
+    double cpu_time_ms;
+    int cpu_id;
 } thread_data_t;
 
 void handle_sigint(int sig);
@@ -44,12 +52,25 @@ void arg_check(int argc, char *argv[]);
 int main(int argc, char *argv[]) {
     arg_check(argc, argv);
 
-    if (argc >= 2 && strcmp(argv[1], "coop") == 0) {
+    if (strcmp(argv[1], "coop") == 0) {
         coop_mode = 1;
+    } else if (strcmp(argv[1], "yield") == 0) {
+        yield_mode = 1;
     }
+
+    const char *mode_str = coop_mode ? "cooperative" :
+                            yield_mode ? "yield" : "normal";
 
     long online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
     long num_threads = THREAD_MULTIPLIER * online_cpus;
+
+    // Override num_threads with custom number if specified by user input
+    if (argc >= 3) {
+        long override = atol(argv[2]);
+        if (override > 0) {
+            num_threads = override;
+        }
+    }
 
     pthread_t *threads = malloc(num_threads * sizeof(pthread_t));
     thread_data_t *thread_args = calloc(num_threads, sizeof(thread_data_t));
@@ -67,13 +88,14 @@ int main(int argc, char *argv[]) {
     printf("Number of threads: %ld\n", num_threads);
     printf("Thread multiplier: %d\n", THREAD_MULTIPLIER);
     printf("Per-thread vector size: %d\n", VECTOR_SIZE);
-    printf("Cooperative mode: %s\n", coop_mode ? "enabled" : "disabled");
+    printf("Mode: %s\n", mode_str);
     printf("Press Ctrl+C to stop...\n\n");
 
     signal(SIGINT, handle_sigint);
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
     for (long i = 0; i < num_threads; i++) {
+        thread_args[i].cpu_id = i % online_cpus;
         if (pthread_create(&threads[i], NULL, vector_add_loop, &thread_args[i]) != 0) {
             perror("pthread_create");
             running = 0;
@@ -91,10 +113,14 @@ int main(int argc, char *argv[]) {
     long total_iters = 0;
     long min_iters = thread_args[0].iterations;
     long max_iters = thread_args[0].iterations;
+    long total_involuntary = 0;
+    double total_cpu_ms = 0.0;
 
     for (long i = 0; i < num_threads; i++) {
         long iters = thread_args[i].iterations;
         total_iters += iters;
+        total_involuntary += thread_args[i].involuntary_switches;
+        total_cpu_ms += thread_args[i].cpu_time_ms;
 
         if (iters < min_iters)
             min_iters = iters;
@@ -109,6 +135,8 @@ int main(int argc, char *argv[]) {
     printf("Throughput (iter/sec): %.2f\n", total_iters / elapsed_sec);
     printf("Min thread iterations: %ld\n", min_iters);
     printf("Max thread iterations: %ld\n", max_iters);
+    printf("Total CPU time (ms): %.2f\n", total_cpu_ms);
+    printf("Involuntary context switches: %ld\n", total_involuntary);
 
     free(threads);
     free(thread_args);
@@ -117,15 +145,17 @@ int main(int argc, char *argv[]) {
 
 void arg_check(int argc, char *argv[]) {
     if (argc <= 1) {
-        printf("Usage: %s [normal|coop]\n", argv[0]);
+        printf("Usage: %s [normal|coop|yield]\n", argv[0]);
         printf("------------------------------------------------------\n");
         printf("normal - run background spinner normally\n");
         printf("coop   - mark spinner threads inactive using set_inactive\n");
+        printf("yield  - call sched_yield() each iteration\n");
+        printf("num_threads - optional, defaults to 2 * online CPUs\n");
         exit(1);
     }
 
-    if (strcmp(argv[1], "coop") != 0 && strcmp(argv[1], "normal") != 0) {
-        printf("Invalid mode. Use 'normal' or 'coop'.\n");
+    if (strcmp(argv[1], "coop") != 0 && strcmp(argv[1], "normal") != 0 && strcmp(argv[1], "yield") != 0) {
+        printf("Invalid mode. Use 'normal', 'coop', or 'yield'.\n");
         exit(1);
     }
 }
@@ -137,6 +167,12 @@ void handle_sigint(int sig) {
 
 void *vector_add_loop(void *arg) {
     thread_data_t *d = (thread_data_t *)arg;
+
+    // Pin this thread to assigned CPU so it doesn't move work to others
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(d->cpu_id, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
     volatile float A[VECTOR_SIZE];
     volatile float B[VECTOR_SIZE];
@@ -165,8 +201,13 @@ void *vector_add_loop(void *arg) {
         for (int i = 0; i < VECTOR_SIZE; i++) {
             C[i] = A[i] + B[i];
         }
-        sink += C[d->iterations % VECTOR_SIZE];
+        sink += C[d->iterations % VECTOR_SIZE]; // Dummy unused value to prevent copmpiler from complaining
+                                                // about unused C[i]
         d->iterations++;
+
+        if (yield_mode) {
+            sched_yield();
+        }
     }
 
     (void)sink;
@@ -175,159 +216,14 @@ void *vector_add_loop(void *arg) {
         set_inactive(0);
     }
 
-    return NULL;
-}
+    struct rusage usage;
+    getrusage(RUSAGE_THREAD, &usage);
 
-/**
-typedef struct {
-    int    *A;
-    int    *B;
-    int    *C;
-    size_t  start;       
-    size_t  end;         
-    long    iterations;
-} thread_data_t;
+    d->involuntary_switches = usage.ru_nivcsw;
 
-// Threads stop when this is cleared by SIGINT.
-static volatile int running = 1;
-
-void handle_sigint(int sig);
-void *vector_add_loop(void *arg);
-void arg_check(int argc, char *argv[]);
-double get_total_time_ms(struct timespec start, struct timespec end);
-
-int main(int argc, char *argv[]) {
-    arg_check(argc, argv);
-    // Check if coop is requested
-    if (argc >= 3 && strcmp(argv[2], "coop") == 0) {
-        coop_mode = 1;
-    }
-
-    long vector_size = atol(argv[1]);
-    long num_threads = THREAD_MULTIPLIER * NUM_THREADS;
-    long elems_per_thread = vector_size / num_threads;
-
-    // Allocate vectors. Allocate C vector and initialize with 0s.
-    int *A = malloc(vector_size * sizeof(int));
-    int *B = malloc(vector_size * sizeof(int));
-    int *C = calloc(vector_size,  sizeof(int));
-
-    if (A == NULL || B == NULL || C == NULL) {
-        fprintf(stderr, "Allocation for vectors A, B, C failed. Exiting...");
-        return 1; 
-    }
-
-    // Initialize A and B with random values
-    srand((unsigned)time(NULL));
-    for (long i = 0; i < vector_size; i++) {
-        A[i] = rand();
-        B[i] = rand();
-    }
-
-    pthread_t threads[num_threads];
-    thread_data_t thread_args[num_threads];
-    struct timespec t_start, t_end;
-
-    printf("Number of threads: %ld\n", num_threads);
-    printf("Thread multiplier: %d\n", THREAD_MULTIPLIER);
-    printf("Vector size: %ld\n", vector_size);
-    printf("Elements per thread: %ld\n", elems_per_thread);
-    printf("Cooperative mode: %s\n", coop_mode ? "enabled" : "disabled");
-    printf("Press Ctrl+C to stop...\n\n");
-
-    signal(SIGINT, handle_sigint);  
-    clock_gettime(CLOCK_MONOTONIC, &t_start);
-
-    for (int i = 0; i < num_threads; i++) {
-        thread_args[i].A     = A;
-        thread_args[i].B     = B;
-        thread_args[i].C     = C;
-        thread_args[i].start = (size_t)(i * elems_per_thread);
-
-        // Last thread handles any remainders
-        thread_args[i].end   = (i == num_threads - 1)
-                                ? (size_t)vector_size
-                                : (size_t)((i + 1) * elems_per_thread);
-        pthread_create(&threads[i], NULL, vector_add_loop, &thread_args[i]);
-    }
-
-    for (int i = 0; i < num_threads; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &t_end);
-
-    // Aggregate stats
-    long full_passes = thread_args[0].iterations;
-    long total_iters = 0;
-    for (int i = 0; i < num_threads; i++) {
-        total_iters += thread_args[i].iterations;
-    }
-
-    double elapsed_sec = get_total_time(t_start, t_end);
-
-    printf("\n\nFull vector passes (thread 0): %ld\n", full_passes);
-    printf("Total time (sec): %.2f\n",  elapsed_sec);
-    printf("Total iterations (all threads): %ld\n",   total_iters);
-    printf("Throughput (iter/sec): %.2f\n",  total_iters / elapsed_sec);
-
-    free(A);
-    free(B);
-    free(C);
-    return 0;
-}
-
-void arg_check(int argc, char *argv[]) {
-    if (argc <= 1) {
-        printf("Usage: %s [VECTOR_SIZE] [mode]\n", argv[0]);
-        printf("------------------------------------------------------\n");
-        printf("VECTOR_SIZE - number of integer elements (2 - 10000)\n");
-        printf("mode        - optional: coop enables cooperative scheduling\n");
-        exit(1);
-    }
-
-    if (atoi(argv[1]) < 2 || atoi(argv[1]) > 10000) {
-        printf("Incompatible VECTOR_SIZE! (2 - 10000)\n");
-        exit(1);
-    }
-    if (argc >= 3 && strcmp(argv[2], "coop") != 0 && strcmp(argv[2], "normal") != 0) {
-        printf("Invalid mode. Use 'normal' or 'coop'.\n");
-        exit(1);
-    }
-}
-
-
-// When pressing CTRL+C to end program, execute this function.
-void handle_sigint(int sig) { 
-    (void)sig; 
-    running = 0; 
-}
-
-// Infinite vector addition of A + B = C sliced for each thread.
-void *vector_add_loop(void *arg) {
-    thread_data_t *d = (thread_data_t *)arg;
-    d->iterations = 0;
-
-    if (coop_mode) {
-        long ret = set_inactive(1);
-        if (ret != 0) {
-            perror("set_inactive");
-            running = 0;
-            return NULL;
-        }
-    }
-
-    while (running) {
-        for (size_t i = d->start; i < d->end; i++) {
-            d->C[i] = d->A[i] + d->B[i];
-        }
-
-        d->iterations++;
-    }
-
-    if (coop_mode) {
-        set_inactive(0);
-    }
+    d->cpu_time_ms =
+        usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0 +
+        usage.ru_stime.tv_sec * 1000.0 + usage.ru_stime.tv_usec / 1000.0;
 
     return NULL;
-}*/
+}

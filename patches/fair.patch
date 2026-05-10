@@ -1,5 +1,5 @@
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 3a35bd128..b08243fa0 100644
+index 3a35bd128..1757d9228 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
 @@ -22,6 +22,8 @@
@@ -34,7 +34,32 @@ index 3a35bd128..b08243fa0 100644
  	ideal_runtime = sched_slice(cfs_rq, curr);
  	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
  	if (delta_exec > ideal_runtime) {
-@@ -4779,6 +4797,29 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
+@@ -4758,6 +4776,24 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+ 		se = cfs_rq->last;
+ 	}
+ 
++	/* Added for Project 3. If final selection after the leftmost and above buddy logic is an inactive
++	task, walk the RB tree from the leftmost node looking for an active task and run that instead.
++	This makes is_inactive a hard deprioritization that it should be, allowing other active tasks to go ahead of it
++	while still letting the inactive task run if no alternative exists.*/
++	if (se && entity_is_task(se) && task_of(se)->is_inactive) {
++		struct sched_entity *first = __pick_first_entity(cfs_rq);
++		struct rb_node *node = first ? &first->run_node : NULL;
++		while (node) {
++			struct sched_entity *cand =
++				rb_entry(node, struct sched_entity, run_node);
++			if (entity_is_task(cand) && !task_of(cand)->is_inactive) {
++				se = cand;
++				break;
++			}
++			node = rb_next(node);
++		}
++	}
++
+ 	return se;
+ }
+ 
+@@ -4779,6 +4815,24 @@ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
  
  	if (prev->on_rq) {
  		update_stats_wait_start(cfs_rq, prev);
@@ -54,17 +79,12 @@ index 3a35bd128..b08243fa0 100644
 +
 +				prev->vruntime += INACTIVE_PENALTY;
 +
-+				/*pr_info_ratelimited("P3 put_prev: pid=%d tgid=%d old=%llu new=%llu penalty=%llu min=%llu nr_running=%u\n",
-+							task->pid, task->tgid,
-+							old_vruntime, prev->vruntime,
-+							INACTIVE_PENALTY, cfs_rq->min_vruntime,
-+							cfs_rq->nr_running); // Debug Print */
 +			}
 +		}
  		/* Put 'current' back into the tree. */
  		__enqueue_entity(cfs_rq, prev);
  		/* in !on_rq case, update occurred at dequeue */
-@@ -7441,6 +7482,19 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+@@ -7441,6 +7495,16 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
  	if (cse_is_idle != pse_is_idle)
  		return;
  
@@ -72,9 +92,6 @@ index 3a35bd128..b08243fa0 100644
 +	the CPU has marked itself inactive, then favor the newly waking task and bypass vruntime comparison.*/
 +	if(curr->is_inactive && !p->is_inactive)
 +	{
-+		/* pr_info_ratelimited("P3 wakeup: inactive curr pid=%d waking pid=%d\n",
-+			    curr->pid, p->pid); // Debug statement
-+				*/
 +		if(!next_buddy_marked)
 +			set_next_buddy(pse);
 +

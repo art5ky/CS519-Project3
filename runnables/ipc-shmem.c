@@ -2,6 +2,7 @@
     Written by: Arthur Levitsky and Alexander Wu
     Description: IPC using shared memory to perform matrix multiplication.
 */
+#define _GNU_SOURCE
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -9,9 +10,11 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <stdbool.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sched.h>
 
 #include "../headers/sqmatrix.h"
 #include "../headers/benchmark.h"
@@ -32,6 +35,8 @@ int main(int argc, char *argv[]) {
     int base_rows = MATRIX_SIZE / num_workers; 
     int remainder = MATRIX_SIZE % num_workers;
     int start_row, end_row; 
+
+    long total_involuntary_switches = 0;
     
     // unlike with pipes, the matrices have been allocated and delivered into a shared space.
     int **A = malloc_sq_matrix(MATRIX_SIZE);
@@ -61,6 +66,11 @@ int main(int argc, char *argv[]) {
 
         // Child process successfully created. Begin work...
         if (pid == 0) {
+            // Pin child process to CPU
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(i, &cpuset);
+            sched_setaffinity(0, sizeof(cpuset), &cpuset);
 
             // Based on the subdivisions per child process, calculate the starting and ending rows factoring in remainders.
             start_row = i * base_rows + (i < remainder ? i : remainder);
@@ -76,8 +86,17 @@ int main(int argc, char *argv[]) {
 
     // Wait for all child processes to terminate. If something goes wrong in termination, report errors.
     for (int i = 0; i < num_workers; i++) {
-        int status; 
-        pid_t child_pid = wait(&status);
+        int status;
+        struct rusage usage;
+
+        pid_t child_pid = wait4(-1, &status, 0, &usage);
+
+        if (child_pid == -1) {
+            perror("wait4 failed");
+            continue;
+        }
+
+        total_involuntary_switches += usage.ru_nivcsw;
 
         if (!WIFEXITED(status)) {
             fprintf(stderr, "Child process: %d terminated abnormally!\n", child_pid);
@@ -92,9 +111,10 @@ int main(int argc, char *argv[]) {
     clock_gettime(CLOCK_MONOTONIC, &end);
     double total_time_sec = get_total_time(start, end);
 
-    // If MATRIX_SIZE <= 1000, do single process matrix multiplication for verification otherwise use Frievalds algorithm.
+    // If MATRIX_SIZE <= 1000, do single process matrix multiplication for verification otherwise use Freivalds algorithm.
     bool verified = verified_matrix(A, B, C, MATRIX_SIZE);   
     print_stats(MATRIX_SIZE, num_workers, verified, total_time_sec);
+    printf("Involuntary context switches: %ld\n", total_involuntary_switches);
 
     free_sq_matrix(A);
     free_sq_matrix(B);

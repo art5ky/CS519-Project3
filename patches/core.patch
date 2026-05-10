@@ -1,5 +1,5 @@
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 71c819c62..fb6d3cf94 100644
+index 71c819c62..c915cce55 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -12,6 +12,9 @@
@@ -12,13 +12,16 @@ index 71c819c62..fb6d3cf94 100644
  #include <linux/nospec.h>
  
  #include <linux/kcov.h>
-@@ -7058,6 +7061,32 @@ EXPORT_SYMBOL(can_nice);
+@@ -7091,6 +7094,38 @@ SYSCALL_DEFINE1(nice, int, increment)
  
- #ifdef __ARCH_WANT_SYS_NICE
+ #endif
  
 +/* 
-+ * sys_set_inactive - Have the thread mar itself as active or inactive
++ * sys_set_inactive - Have the thread mark itself as active or inactive
 + * @is_inactive: Flag to set status as active (0) or inactive (1)
++ * Inactive tasks are deprioritized by the CFS. put_prev_entity inflates vruntime on every preemption,
++ * check_preempt_tick forces the task of CPU at tick boundaries, check_preempt_wakeup yields to active waking tasks,
++ * pick_next_entity prefers active tasks when both exist on the runqueue.
 + */
 +SYSCALL_DEFINE1(set_inactive, int, is_inactive)
 +{
@@ -28,20 +31,23 @@ index 71c819c62..fb6d3cf94 100644
 +	if(is_inactive != 0 && is_inactive != 1)
 +		return -EINVAL; 
 +
-+	task->is_inactive = is_inactive;
-+	pr_info_ratelimited("Set Inactive: Task PID=%d TGID=%d is_inactive=%d\n", 
-+		task->pid, task->tgid, task->is_inactive);
-+	
-+	// Inactive thread lets the scheduler run another task
-+	if(is_inactive)
-+	{
-+		set_tsk_need_resched(task);
-+		schedule();
++	// Case for reactivating a task. 
++	if (is_inactive == 0 && task->is_inactive == 1) {
++		struct rq_flags rf;
++		struct rq *rq = task_rq_lock(task, &rf);
++		task->se.vruntime = rq->cfs.min_vruntime; // Put task back at the front and clear
++											//  vruntime punishments occurred from being inactive.
++		task->is_inactive = 0;
++		task_rq_unlock(rq, task, &rf);
++	} else {
++		task->is_inactive = is_inactive;
++		if (is_inactive)
++			cond_resched(); // Switch if there is a higher priority task waiting, otherwise keep running
 +	}
 +
 +	return 0;
 +}
 +
- /*
-  * sys_nice - change the priority of the current process.
-  * @increment: priority increment
+ /**
+  * task_prio - return the priority value of a given task.
+  * @p: the task in question.
